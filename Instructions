@@ -4,6 +4,8 @@ sudo curl -sSL https://raw.githubusercontent.com/SirJBiscuit/toast-installer/mai
 
 sudo chmod +x /usr/local/bin/toastinstall
 
+sudo toastintall                 # this will run the script
+
 
 
 This script will allow you to make multiple nodes, much easier and faster.
