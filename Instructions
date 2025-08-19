@@ -3,3 +3,8 @@ To install the node installer script 'toastinstall' please run this script from 
 sudo curl -sSL https://raw.githubusercontent.com/SirJBiscuit/toast-installer/main/nodeinstaller.sh | sed 's/\r$//' | sudo tee /usr/local/bin/toastinstall > /dev/null
 
 sudo chmod +x /usr/local/bin/toastinstall
+
+
+
+This script will allow you to make multiple nodes, much easier and faster.
+Run script -> Follow Prompts -> Profit!
