@@ -1,0 +1,133 @@
+#!/bin/bash
+#
+# Pterodactyl Watchdog v1.2 - Now with start/stop/status controls.
+
+# --- Configuration ---
+CONFIG_FILE="/etc/pterowatchdog.conf"
+LOG_FILE="/var/log/pterowatchdog.log"
+
+# Define the cron job command and a unique identifier comment
+CRON_COMMAND="/usr/local/bin/pterowatchdog"
+CRON_COMMENT="# Pterodactyl Watchdog"
+CRON_JOB="*/5 * * * * ${CRON_COMMAND} >> ${LOG_FILE} 2>&1 ${CRON_COMMENT}"
+
+# --- Main Functions ---
+
+# This function contains the actual monitoring logic
+run_check() {
+    # Exit if the config file doesn't exist
+    if [ ! -f "$CONFIG_FILE" ]; then
+        echo "ERROR: Configuration file not found at $CONFIG_FILE" >> "$LOG_FILE"
+        exit 1
+    fi
+    source "$CONFIG_FILE"
+
+    echo "Starting Pterodactyl Watchdog check at $(date)"
+
+    CORE_SERVICES=("nginx" "mariadb" "docker" "wings" "pteroq" "redis-server")
+    
+    notify() {
+        curl -s -H "Title: $1" -H "Priority: $2" -d "$3" "ntfy.sh/$NTFY_TOPIC" > /dev/null
+    }
+
+    # 1. Check Core System Services
+    for service in "${CORE_SERVICES[@]}"; do
+        if ! systemctl is-active --quiet "$service"; then
+            echo "Service '$service' is INACTIVE. Attempting restart..."
+            notify "Pterodactyl Alert" "high" "Core service '$service' was found inactive. Attempting to restart it now."
+            systemctl restart "$service"
+            sleep 5
+            if systemctl is-active --quiet "$service"; then
+                echo "Service '$service' restarted successfully."
+                notify "Pterodactyl Recovery" "default" "Service '$service' was successfully restarted and is now online."
+            else
+                echo "CRITICAL: Failed to restart service '$service'."
+                notify "Pterodactyl CRITICAL" "urgent" "Failed to restart service '$service'. Manual intervention required!"
+            fi
+        fi
+    done
+
+    # 2. Check Game Servers via API
+    echo "Checking game server states via API..."
+    API_RESPONSE=$(curl -s -X GET "$PANEL_URL/api/client" -H "Authorization: Bearer $API_KEY" -H "Accept: Application/vnd.pterodactyl.v1+json")
+    if ! echo "$API_RESPONSE" | jq -e '.object == "list"' > /dev/null; then
+        echo "CRITICAL: Failed to get server list from Pterodactyl API."
+        notify "Pterodactyl CRITICAL" "urgent" "Watchdog failed to get a server list from the API. Check panel URL and API key."
+        exit 1
+    fi
+    echo "$API_RESPONSE" | jq -c '.data[]' | while read -r server_data; do
+        SERVER_ID=$(echo "$server_data" | jq -r '.attributes.identifier')
+        SERVER_STATUS=$(echo "$server_data" | jq -r '.attributes.status')
+        if [ "$SERVER_STATUS" == "null" ] && [ "$(echo "$server_data" | jq -r '.attributes.is_suspended')" == "false" ]; then
+            RESOURCES_RESPONSE=$(curl -s -X GET "$PANEL_URL/api/client/servers/$SERVER_ID/resources" -H "Authorization: Bearer $API_KEY" -H "Accept: Application/vnd.pterodactyl.v1+json")
+            CURRENT_STATE=$(echo "$RESOURCES_RESPONSE" | jq -r '.attributes.current_state')
+            if [ "$CURRENT_STATE" == "offline" ]; then
+                SERVER_NAME=$(echo "$server_data" | jq -r '.attributes.name')
+                echo "CONFIRMED CRASH: Server '$SERVER_NAME' ($SERVER_ID) is offline unexpectedly."
+                notify "Pterodactyl Crash" "high" "Server '$SERVER_NAME' was found crashed. Attempting an automatic restart."
+                curl -s -X POST "$PANEL_URL/api/client/servers/$SERVER_ID/power" -H "Authorization: Bearer $API_KEY" -H "Content-Type: application/json" -d '{"signal": "restart"}' > /dev/null
+                echo "Restart command sent to '$SERVER_NAME'."
+            fi
+        fi
+    done
+    echo "Watchdog check complete."
+}
+
+# --- Control Functions ---
+
+start() {
+    if [[ $EUID -ne 0 ]]; then echo "Please use sudo to run this command."; exit 1; fi
+    echo "Starting Pterodactyl Watchdog..."
+    crontab -l -u root | grep -qF "$CRON_COMMENT"
+    if [ $? -eq 0 ]; then
+        echo "Watchdog is already running (cron job exists)."
+        exit 1
+    fi
+    (crontab -l -u root 2>/dev/null; echo "$CRON_JOB") | crontab -u root -
+    echo "Watchdog started. It will run every 5 minutes."
+}
+
+stop() {
+    if [[ $EUID -ne 0 ]]; then echo "Please use sudo to run this command."; exit 1; fi
+    echo "Stopping Pterodactyl Watchdog..."
+    crontab -l -u root | grep -qF "$CRON_COMMENT"
+    if [ $? -ne 0 ]; then
+        echo "Watchdog is not running (cron job does not exist)."
+        exit 1
+    fi
+    crontab -l -u root | grep -vF "$CRON_COMMENT" | crontab -u root -
+    echo "Watchdog stopped."
+}
+
+status() {
+    if [[ $EUID -ne 0 ]]; then echo "Please use sudo to run this command."; exit 1; fi
+    echo -n "Pterodactyl Watchdog status: "
+    crontab -l -u root | grep -qF "$CRON_COMMENT"
+    if [ $? -eq 0 ]; then
+        echo "ACTIVE (scheduled to run every 5 minutes)"
+    else
+        echo "INACTIVE"
+    fi
+}
+
+# --- Argument Parser ---
+
+case "$1" in
+    start)
+        start
+        ;;
+    stop)
+        stop
+        ;;
+    status)
+        status
+        ;;
+    "")
+        # If run without arguments (by cron), perform the check
+        run_check
+        ;;
+    *)
+        echo "Usage: sudo $0 {start|stop|status}"
+        exit 1
+        ;;
+esac

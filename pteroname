@@ -1,0 +1,54 @@
+#!/bin/bash
+# Location: /usr/local/bin/pteroname
+# Helper script to interactively name Pterodactyl servers.
+
+CONFIG_FILE="/etc/pteromonitor.conf"
+
+# Check for root privileges
+if [[ $EUID -ne 0 ]]; then
+   echo "This script must be run as root. Please use sudo."
+   exit 1
+fi
+
+# Ensure config file exists and is writable
+if ! touch "$CONFIG_FILE" 2>/dev/null; then
+    echo "Error: Cannot write to $CONFIG_FILE. Please check permissions."
+    exit 1
+fi
+
+source "$CONFIG_FILE"
+
+get_unnamed_servers() {
+    docker ps --format "{{.Names}}" | while read -r uuid; do
+        if [[ $uuid =~ ^[0-9a-f]{8}-([0-9a-f]{4}-){3}[0-9a-f]{12}$ ]]; then
+            var_name="SERVER_${uuid//-/_}"
+            if [ -z "${!var_name}" ]; then
+                echo "$uuid"
+            fi
+        fi
+    done
+}
+
+UNNAMED_SERVERS=$(get_unnamed_servers)
+
+if [ -z "$UNNAMED_SERVERS" ]; then
+    echo "All running servers are already named. Nothing to do."
+    exit 0
+fi
+
+echo "Found unnamed servers. Please provide a friendly name for each."
+
+for uuid in $UNNAMED_SERVERS; do
+    read -p "Enter name for server ${uuid:0:8}: " friendly_name
+    if [ -n "$friendly_name" ]; then
+        var_name="SERVER_${uuid//-/_}"
+        # Escape quotes and backslashes for safe storage
+        safe_name=$(echo "$friendly_name" | sed 's/\\/\\\\/g' | sed 's/"/\\"/g')
+        echo "${var_name}=\"$safe_name\"" >> "$CONFIG_FILE"
+        echo "Added '$friendly_name' to the configuration."
+    else
+        echo "Skipping. No name provided."
+    fi
+done
+
+echo "Server naming complete."

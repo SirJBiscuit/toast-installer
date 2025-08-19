@@ -1,0 +1,173 @@
+#!/bin/bash
+# Location: /usr/local/bin/pteromonitor
+#
+# Pterodactyl Live Monitor - A real-time status viewer for Pterodactyl services.
+
+# -- User Configuration --
+
+# Set to 'true' to display the core service status, or 'false' to hide it.
+SHOW_SERVICES=false
+
+
+# --- Configuration ---
+GREEN=$(tput setaf 2); RED=$(tput setaf 1); LIME=$(tput setaf 10)
+CYAN=$(tput setaf 6); ORANGE=$(tput setaf 3); YELLOW=$(tput setaf 3)
+NC=$(tput sgr0)
+
+# --- Functions ---
+cleanup() {
+    tput cnorm # Restore cursor visibility
+    exit 0
+}
+trap cleanup INT
+clear
+# --- First-Time Setup ---
+PTERONAME_SCRIPT_PATH="/usr/local/bin/pteroname"
+CONFIG_FILE_PATH="/etc/pteromonitor.conf"
+
+setup_needed=false
+if [ ! -f "$PTERONAME_SCRIPT_PATH" ] || [ ! -f "$CONFIG_FILE_PATH" ]; then
+    setup_needed=true
+fi
+
+if [ "$setup_needed" = true ] && [ "$EUID" -ne 0 ]; then
+    echo "First-time setup required. Please run this script with sudo once."
+    echo "sudo pteromonitor"
+    exit 1
+fi
+
+if [ ! -f "$CONFIG_FILE_PATH" ]; then
+    echo "Creating config file at $CONFIG_FILE_PATH..."
+    touch "$CONFIG_FILE_PATH"
+    echo "Done."
+fi
+
+if [ ! -f "$PTERONAME_SCRIPT_PATH" ]; then
+    echo "Installing helper script to $PTERONAME_SCRIPT_PATH..."
+    cat <<'EOF' > "$PTERONAME_SCRIPT_PATH"
+#!/bin/bash
+# Location: /usr/local/bin/pteroname
+# Helper script to interactively name Pterodactyl servers.
+CONFIG_FILE="/etc/pteromonitor.conf"
+if [[ $EUID -ne 0 ]]; then echo "This script must be run as root. Please use sudo."; exit 1; fi
+if ! touch "$CONFIG_FILE" 2>/dev/null; then echo "Error: Cannot write to $CONFIG_FILE. Check permissions."; exit 1; fi
+source "$CONFIG_FILE"
+get_unnamed_servers() {
+    docker ps --format "{{.Names}}" | while read -r uuid; do
+        if [[ $uuid =~ ^[0-9a-f]{8}-([0-9a-f]{4}-){3}[0-9a-f]{12}$ ]]; then
+            var_name="SERVER_${uuid//-/_}"
+            if [ -z "${!var_name}" ]; then echo "$uuid"; fi
+        fi
+    done
+}
+UNNAMED_SERVERS=$(get_unnamed_servers)
+if [ -z "$UNNAMED_SERVERS" ]; then echo "All running servers are already named."; exit 0; fi
+echo "Found unnamed servers. Please provide a friendly name for each."
+for uuid in $UNNAMED_SERVERS; do
+    read -p "Enter name for server ${uuid:0:8}: " friendly_name
+    if [ -n "$friendly_name" ]; then
+        var_name="SERVER_${uuid//-/_}"
+        safe_name=$(echo "$friendly_name" | sed 's/\\/\\\\/g' | sed 's/"/\\"/g')
+        echo "${var_name}=\"$safe_name\"" >> "$CONFIG_FILE"
+        echo "Added '$friendly_name' to the configuration."
+    else
+        echo "Skipping. No name provided."
+    fi
+done
+echo "Server naming complete."
+EOF
+    chmod +x "$PTERONAME_SCRIPT_PATH"
+    echo "Done. You can now run 'sudo pteroname' to name servers."
+fi
+
+# --- Main ---
+clear
+tput civis
+CPU_PREV_STATS=$(cat /proc/stat | grep '^cpu ')
+
+while true; do
+    CPU_CURR_STATS=$(cat /proc/stat | grep '^cpu ')
+    CPU_USAGE_PERCENTAGE=$(awk -v prev="$CPU_PREV_STATS" -v curr="$CPU_CURR_STATS" 'BEGIN {
+        split(prev, p, " "); split(curr, c, " ");
+        prev_idle = p[5] + p[6]; prev_total = 0; for (i=2; i<=11; i++) { prev_total += p[i] };
+        curr_idle = c[5] + c[6]; curr_total = 0; for (i=2; i<=11; i++) { curr_total += c[i] };
+        total_diff = curr_total - prev_total; idle_diff = curr_idle - prev_idle;
+        if (total_diff > 0) { printf "%.2f%%", (1 - (idle_diff / total_diff)) * 100 } else { printf "0.00%%" }
+    }')
+
+    tput cup 0 0
+    UPTIME=$(uptime -p | sed 's/up //'); MEM_INFO=$(free -h | awk '/^Mem:/ {printf "%s / %s", $3, $2}')
+    LOAD_AVG=$(uptime | awk -F'load average: ' '{print $2}'); IP_ADDR=$(hostname -I | awk '{print $1}')
+    DISK_INFO=$(df -h / | awk 'NR==2 {printf "%s / %s (%s)", $3, $2, $5}')
+
+    CPU_CORES=$(nproc); LOAD_1MIN=$(echo "$LOAD_AVG" | awk -F, '{print $1}')
+    LOAD_COLOR_CODE=$(awk -v val="$LOAD_1MIN" -v cores="$CPU_CORES" 'BEGIN{if(val>cores){print 2}else if(val>cores*0.7){print 1}else{print 0}}')
+    LOAD_COLOR=$GREEN; if [[ "$LOAD_COLOR_CODE" -eq 2 ]]; then LOAD_COLOR=$RED; elif [[ "$LOAD_COLOR_CODE" -eq 1 ]]; then LOAD_COLOR=$ORANGE; fi
+
+    CPU_USAGE_RAW=$(echo "$CPU_USAGE_PERCENTAGE" | sed 's/%%//')
+    CPU_COLOR_CODE=$(awk -v val="$CPU_USAGE_RAW" 'BEGIN{if(val>90){print 2}else if(val>70){print 1}else{print 0}}')
+    CPU_COLOR=$GREEN; if [[ "$CPU_COLOR_CODE" -eq 2 ]]; then CPU_COLOR=$RED; elif [[ "$CPU_COLOR_CODE" -eq 1 ]]; then CPU_COLOR=$ORANGE; fi
+
+    echo "${LIME}----------------------------------------------------${NC}"
+    echo "${CYAN}      Pterodactyl Live Monitor - Guythatcooks       ${NC}"
+    echo "${CYAN}             (Press Ctrl+C to exit)               ${NC}"
+    echo "${LIME}----------------------------------------------------${NC}"
+    echo "${CYAN}System Information:	${NC}"
+    echo -e "${CYAN}  Uptime:\t${NC}${ORANGE}$UPTIME	${NC}"
+    echo -e "${CYAN}  Memory:\t${NC}${ORANGE}$MEM_INFO	${NC}"
+    echo -e "${CYAN}  CPU Usage:	\t${NC}${CPU_COLOR}$CPU_USAGE_PERCENTAGE	${NC}"
+    echo -e "${CYAN}  Disk:\t\t${NC}${ORANGE}$DISK_INFO		${NC}"
+    echo -e "${CYAN}  Load:\t\t${NC}${LOAD_COLOR}$LOAD_AVG	${NC}"
+    echo -e "${CYAN}  IP:\t\t${NC}${ORANGE}$IP_ADDR	${NC}"
+    # -- Only show this sectionif Show_Services is true
+	if [ "$SHOW_SERVICES" == true ]; then
+    		echo "${LIME}----------------------------------------------------${NC}"
+    		echo "${CYAN}Service Status:	${NC}"
+    		for service in nginx mariadb docker wings pteroq redis-server; do
+        		if systemctl is-active --quiet "$service"; then status="${GREEN}[ONLINE]${NC}"; else status="${RED}[OFFLINE]${NC}"; fi
+       			 echo -e "${CYAN}  $service:\t${status}		${NC}"
+    		done
+    fi
+    # -- End of condiitional block --
+
+    echo "${LIME}----------------------------------------------------${NC}"
+    echo "${CYAN}Running Game Servers:${NC}"
+
+    CONFIG_FILE="/etc/pteromonitor.conf"
+    if [[ -f "$CONFIG_FILE" ]]; then source "$CONFIG_FILE" < /dev/null; fi
+    
+    RUNNING_SERVERS=$(docker ps --format "{{.Names}}\t{{.Status}}")
+    HAS_UNNAMED_SERVER=false
+    if [[ -z "$RUNNING_SERVERS" ]]; then
+        echo "${ORANGE}  No servers are currently running.             ${NC}"
+    else
+        # FIX: Use a robust while-read loop to process servers line-by-line
+        echo "$RUNNING_SERVERS" | while IFS=$'\t' read -r uuid status; do
+            if [[ $uuid =~ ^[0-9a-f]{8}-([0-9a-f]{4}-){3}[0-9a-f]{12}$ ]]; then
+                var_name="SERVER_${uuid//-/_}"; friendly_name=${!var_name}
+                if [[ -n "$friendly_name" ]]; then 
+                    display_name="$friendly_name"
+
+                else 
+                    display_name="(${uuid:0:8})"
+                    HAS_UNNAMED_SERVER=true
+                fi
+                printf "  %-30s %s\n" "${ORANGE}$display_name${NC}" "${NC}$status	${NC}"
+            fi
+        done
+    fi
+    
+    echo "${LIME}----------------------------------------------------${NC}"
+    echo "${CYAN}Last updated:${NC} ${ORANGE}$(date)	${NC}      "
+    if [[ -f /var/run/reboot-required ]]; then
+        echo "${YELLOW}[!] REBOOT REQUIRED to apply system updates.	${NC}"
+    elif [[ "$HAS_UNNAMED_SERVER" == "true" ]]; then
+        echo "${YELLOW}[!] New server found! Run 'sudo pteroname' to name it.	${NC}"
+    else
+        echo "         		                                         "
+    fi
+    echo "                                                               "
+
+    CPU_PREV_STATS=$CPU_CURR_STATS
+    sleep 3
+done

@@ -1,0 +1,31 @@
+#! /bin/bash
+# This script checks the status of Pterodactyl servcies and displays a MOTD
+
+# Use tput for maxiumum compatiblity
+GREEN=$(tput setaf 2)
+RED=$(tput setaf 1)
+NC=$(tput sgr0) # no color / reset
+
+
+# - Start -
+echo
+echo "----------------------------------"
+echo "    Pterodactyl System Status     "
+echo "----------------------------------"
+
+
+
+for service in nginx mariadb docker wings pteroq redis-server; do
+	# check if the service is active
+	if systemctl is-active --quiet "$service"; then
+		status="${GREEN}[ONLINE]${NC}"
+	else
+		status="${RED}[OFFLINE]${NC}"
+	fi
+	# Print the service name and its status, formatted nicely
+	printf "%-15s %s\n" "$service: " "$status" 
+done
+
+echo "----------------------------------------"
+echo 
+
