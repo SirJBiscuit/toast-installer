@@ -1,0 +1,210 @@
+#!/usr/bin/env python3
+import requests
+import time
+import os
+import json
+import sys
+import re
+import threading
+import copy
+
+# --- CONFIGURATION ---
+PTERODACTYL_URL = 'https://panel.cloudmc.online'
+CONFIG_PATH = '/etc/toast/config.json'
+# ---------------------
+
+DATA_REFRESH_INTERVAL = 5 # How often to fetch new data from the API
+UI_REFRESH_INTERVAL = 1   # How often to redraw the screen
+
+# --- Globals for threading ---
+data_store = {"nodes": None, "servers": None, "last_updated": None, "status": "Initializing"}
+data_lock = threading.Lock()
+app_exit = threading.Event()
+
+class Colors:
+    GREEN = '\033[92m'
+    RED = '\033[91m'
+    YELLOW = '\033[93m'
+    BLUE = '\033[94m'
+    CYAN = '\033[96m'
+    RESET = '\033[0m'
+
+def get_usage_color(percentage):
+    if percentage > 85: return Colors.RED
+    if percentage > 60: return Colors.YELLOW
+    return Colors.GREEN
+
+def is_api_key_valid(key_to_test):
+    if not key_to_test: return False
+    headers = {'Authorization': f'Bearer {key_to_test}', 'Accept': 'application/json'}
+    try:
+        res = requests.get(f'{PTERODACTYL_URL}/api/application/nodes', headers=headers, timeout=5)
+        return res.status_code == 200
+    except requests.exceptions.RequestException:
+        return False
+
+def save_api_key(api_key):
+    try:
+        os.makedirs(os.path.dirname(CONFIG_PATH), exist_ok=True)
+        with open(CONFIG_PATH, 'w') as f:
+            json.dump({'api_key': api_key}, f)
+        os.chmod(CONFIG_PATH, 0o600)
+        return True
+    except PermissionError:
+        print(f"\n{Colors.RED}Permission denied to write to '{CONFIG_PATH}'.{Colors.RESET}")
+        print(f"{Colors.YELLOW}Please re-run the script using 'sudo toast' to save the API key.{Colors.RESET}")
+        return False
+    except Exception as e:
+        print(f"{Colors.RED}An error occurred while saving the key: {e}{Colors.RESET}")
+        return False
+
+def load_api_key():
+    if not os.path.exists(CONFIG_PATH): return None
+    try:
+        with open(CONFIG_PATH, 'r') as f:
+            return json.load(f).get('api_key')
+    except (json.JSONDecodeError, PermissionError):
+        return None
+
+def prompt_for_api_key():
+    print('\033[?25h', end="") # Show cursor
+    api_key = None
+    try:
+        new_key = input(f"{Colors.YELLOW}Please paste your Pterodactyl Application API key and press Enter: {Colors.RESET}").strip()
+        if not new_key:
+            print(f"{Colors.RED}No key provided.{Colors.RESET}")
+            return None
+        
+        print(f"{Colors.YELLOW}Validating key...{Colors.RESET}")
+        if is_api_key_valid(new_key):
+            print(f"{Colors.GREEN}API key is valid. Saving...{Colors.RESET}")
+            if save_api_key(new_key):
+                print(f"{Colors.GREEN}Key saved to {CONFIG_PATH}{Colors.RESET}")
+                api_key = new_key
+        else:
+            print(f"{Colors.RED}API key is invalid or the panel is unreachable.{Colors.RESET}")
+    except KeyboardInterrupt:
+        raise
+    finally:
+        print('\033[?25l', end="") # Hide cursor
+    return api_key
+
+def data_fetcher_thread(api_key):
+    while not app_exit.is_set():
+        current_status = "OK"
+        try:
+            headers = {'Authorization': f'Bearer {api_key}', 'Accept': 'application/json'}
+            nodes_res = requests.get(f'{PTERODACTYL_URL}/api/application/nodes', headers=headers, timeout=4)
+            servers_res = requests.get(f'{PTERODACTYL_URL}/api/application/servers?include=node', headers=headers, timeout=4)
+            
+            if nodes_res.status_code == 200 and servers_res.status_code == 200:
+                with data_lock:
+                    data_store["nodes"] = nodes_res.json()['data']
+                    data_store["servers"] = servers_res.json()['data']
+            elif nodes_res.status_code in [401, 403] or servers_res.status_code in [401, 403]:
+                current_status = "API_KEY_INVALID"
+            else:
+                current_status = "HTTP_ERROR"
+
+        except requests.exceptions.RequestException:
+            current_status = "NETWORK_ERROR"
+        
+        with data_lock:
+            data_store["status"] = current_status
+            data_store["last_updated"] = time.time()
+
+        app_exit.wait(DATA_REFRESH_INTERVAL)
+
+def display_dashboard(data, animation_frame):
+    buffer = ["\033[H\033[J"] # Fast clear screen
+    buffer.append(f"{Colors.BLUE}--- Toast Monitor System - Node / Server Stats ---{Colors.RESET}\n")
+    buffer.append(f"Screen Updated: {time.strftime('%Y-%m-%d %H:%M:%S')}\n\n")
+
+    # Node Display
+    buffer.append(f"{Colors.CYAN}Node Status & Usage:{Colors.RESET}\n")
+    if data['nodes']:
+        buffer.append(f"{Colors.BLUE}{'NODE NAME':<20} {'STATUS':<10} {'RAM (Free/Alloc/Total MB)':<35} {'DISK (Free/Alloc/Total MB)':<35}{Colors.RESET}\n")
+        buffer.append(f"{Colors.BLUE}{'-'*20} {'-'*10} {'-'*35} {'-'*35}{Colors.RESET}\n")
+        for item in data['nodes']:
+            node = item['attributes']
+            status = f"{Colors.GREEN}ONLINE{Colors.RESET}" if not node['maintenance_mode'] else f"{Colors.RED}OFFLINE{Colors.RESET}"
+            ram_alloc, ram_total = node['allocated_resources']['memory'], node['memory']
+            ram_free = ram_total - ram_alloc
+            ram_perc = (ram_alloc / ram_total * 100) if ram_total > 0 else 0
+            ram_color = get_usage_color(ram_perc)
+            ram_str = f"{ram_free}/{ram_alloc}/{ram_total}"
+            disk_alloc, disk_total = node['allocated_resources']['disk'], node['disk']
+            disk_free = disk_total - disk_alloc
+            disk_perc = (disk_alloc / disk_total * 100) if disk_total > 0 else 0
+            disk_color = get_usage_color(disk_perc)
+            disk_str = f"{disk_free}/{disk_alloc}/{disk_total}"
+            buffer.append(f"{node['name']:<20} {status:<18} {ram_color}{ram_str:<35}{Colors.RESET} {disk_color}{disk_str:<35}{Colors.RESET}\n")
+    else:
+        buffer.append(f"{Colors.YELLOW}Awaiting first data fetch from panel...{Colors.RESET}\n")
+    
+    buffer.append("\n" + "="*85 + "\n\n")
+
+    # Server Display
+    buffer.append(f"{Colors.CYAN}Server Resource Limits:{Colors.RESET}\n")
+    if data['servers']:
+        data['servers'].sort(key=lambda s: (s['attributes']['node'], s['attributes']['name']))
+        buffer.append(f"{Colors.BLUE}{'SERVER NAME':<30} {'NODE':<15} {'CPU':<10} {'MEMORY':<12} {'DISK':<12}{Colors.RESET}\n")
+        buffer.append(f"{Colors.BLUE}{'-'*30} {'-'*15} {'-'*10} {'-'*12} {'-'*12}{Colors.RESET}\n")
+        for item in data['servers']:
+            s = item['attributes']
+            cpu = f"{s['limits']['cpu']}%" if s['limits']['cpu'] > 0 else "Any"
+            buffer.append(f"{s['name']:<30} {s['relationships']['node']['attributes']['name']:<15} {cpu:<10} {s['limits']['memory']:<5} MB    {s['limits']['disk']:<5} MB\n")
+    else:
+        buffer.append(f"{Colors.YELLOW}Awaiting server data...{Colors.RESET}\n")
+        
+    sys.stdout.write("".join(buffer))
+    
+    # Footer and Animation
+    animation_chars = ['   ', '.  ', '.. ', '...']
+    anim_str = animation_chars[animation_frame % len(animation_chars)]
+    
+    status_text = "Unknown Status..."
+    if data['status'] == "OK" and data['last_updated'] is not None:
+        status_text = f"Last update: {int(time.time() - data['last_updated'])}s ago"
+    else:
+        status_messages = {
+            "Initializing": "Fetching initial data...",
+            "NETWORK_ERROR": f"{Colors.RED}Network Error. Retrying...{Colors.RESET}",
+            "API_KEY_INVALID": f"{Colors.RED}API Key Invalid. Check config. Retrying...{Colors.RESET}",
+            "HTTP_ERROR": f"{Colors.RED}Panel HTTP Error. Retrying...{Colors.RESET}"
+        }
+        status_text = status_messages.get(data['status'], status_text)
+
+    sys.stdout.write(f"\n{Colors.YELLOW}Updating{anim_str} ({status_text}) (Ctrl+C to exit){Colors.RESET}\r")
+    sys.stdout.flush()
+
+def main():
+    api_key = load_api_key()
+    if not is_api_key_valid(api_key):
+        api_key = prompt_for_api_key()
+        if not api_key:
+            sys.exit(1)
+
+    fetcher = threading.Thread(target=data_fetcher_thread, args=(api_key,), daemon=True)
+    fetcher.start()
+
+    animation_frame = 0
+    while True:
+        with data_lock:
+            local_data = copy.copy(data_store)
+        
+        display_dashboard(local_data, animation_frame)
+        animation_frame += 1
+        time.sleep(UI_REFRESH_INTERVAL)
+
+if __name__ == "__main__":
+    try:
+        print('\033[?25l', end="") # Hide cursor
+        main()
+    except KeyboardInterrupt:
+        app_exit.set()
+    finally:
+        print('\033[?25h', end="") # Restore cursor
+        sys.stdout.write(" " * 80 + "\r")
+        sys.stdout.flush()
+        print(f"\n{Colors.YELLOW}Exiting monitor.{Colors.RESET}")
