@@ -1,0 +1,5 @@
+To install the node installer script 'toastinstall' please run this script from physical node:
+
+sudo curl -sSL https://raw.githubusercontent.com/SirJBiscuit/toast-installer/main/toastinstaller.sh | sed 's/\r$//' | sudo tee /usr/local/bin/toastinstall > /dev/null
+
+sudo chmod +x /usr/local/bin/toastinstall
