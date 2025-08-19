@@ -260,6 +260,21 @@ install_other_scripts() {
                     else
                         log_error "Failed to install '$command'."
                     fi
+
+                    # Special handling for pteromenu config file
+                    if [[ "$name" == "Ptero Menu" ]]; then
+                        log_info "Installing configuration for Ptero Menu..."
+                        local config_url="$repo_url/pteromenu.conf"
+                        local config_dest="/etc/pteromenu.conf"
+                        # Create directory if it doesn't exist
+                        sudo mkdir -p "$(dirname "$config_dest")"
+                        curl -sSL "$config_url" | sed 's/\r$//' | sudo tee "$config_dest" > /dev/null
+                        if [ -f "$config_dest" ]; then
+                            log_success "Configuration file installed to $config_dest."
+                        else
+                            log_error "Failed to install configuration file."
+                        fi
+                    fi
                 fi
                 break 2
             fi
