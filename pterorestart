@@ -1,0 +1,25 @@
+
+if [ "$EUID" -ne 0 ]; then
+        echo "Please run this script with sudo."
+        exit 1
+fi
+
+GREEN=$(tput setaf 2)
+RED=$(tput setaf 1)
+LIME=$(tput setaf 10)
+NC=$(tput sgr0)
+
+echo "${LIME}---- Pterodactyl Service Restart ---${NC}"
+
+for service in nginx mariadb redis-server wings pteroq; do
+        echo -n "Restarting $service..."
+        # Hide stdout and sterr for a cleaner look
+        if systemctl restart "$service" >/dev/null 2>&1; then
+                echo -e "\t[${GREEN}OK${NC}]"
+        else
+                echo -e "\t[${RED}FAILED${NC}]"
+        fi
+done
+
+echo "${LIME}--- Restart sequence complete --- ${NC}"
+tput cnorm

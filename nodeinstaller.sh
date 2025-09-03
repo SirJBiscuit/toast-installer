@@ -217,11 +217,11 @@ show_help() {
 
 install_other_scripts() {
     log_info "--- Install Other Scripts ---"
-    
+
     PS3=$'\n'"Select a script to install: "
     # This points to your toast-installer repository.
     local repo_url="https://raw.githubusercontent.com/SirJBiscuit/toast-installer/main"
-    
+
     # List of your scripts. Format: "Display Name" "command_name" "full_raw_github_url"
     local scripts=(
         "Ptero Monitor" "pteromonitor" "$repo_url/pteromonitor"
@@ -250,7 +250,6 @@ install_other_scripts() {
                 local name="${scripts[i]}"
                 local command="${scripts[i+1]}"
                 local url="${scripts[i+2]}"
-                
                 if prompt_yes_no "Install '$name' as '$command'?"; then
                     log_info "Installing '$command' from $url..."
                     curl -sSL "$url" | sed 's/\r$//' | sudo tee "/usr/local/bin/$command" > /dev/null
@@ -259,6 +258,21 @@ install_other_scripts() {
                         log_success "'$command' installed successfully."
                     else
                         log_error "Failed to install '$command'."
+                    fi
+
+                    # Special handling for pteromenu config file
+                    if [[ "$name" == "Ptero Menu" ]]; then
+                        log_info "Installing configuration for Ptero Menu..."
+                        local config_url="$repo_url/pteromenu.conf"
+                        local config_dest="/etc/pteromenu.conf"
+                        # Create directory if it doesn't exist
+                        sudo mkdir -p "$(dirname "$config_dest")"
+                        curl -sSL "$config_url" | sed 's/\r$//' | sudo tee "$config_dest" > /dev/null
+                        if [ -f "$config_dest" ]; then
+                            log_success "Configuration file installed to $config_dest."
+                        else
+                            log_error "Failed to install configuration file."
+                        fi
                     fi
                 fi
                 break 2
@@ -272,7 +286,6 @@ install_other_scripts() {
 
 update_repository() {
     log_info "--- Update GitHub Repository ---"
-    
     if ! git rev-parse --is-inside-work-tree > /dev/null 2>&1; then
         log_error "This command must be run from within the git repository folder."
         return 1
@@ -315,9 +328,7 @@ main_menu() {
         echo '   | $$    \$$    $$| $$  | $$ \$$    $$  | $$   '
         echo '    \$$     \$$$$$$  \$$   \$$  \$$$$$$    \$$   '
         echo -e "\n               Node Installer${C_RESET}\n"
-        
         log_info "This script will guide you through setting up a new Pterodactyl node."
-        
         PS3=$'\n'"Please choose an option: "
         options=(
             "Run all core steps"
@@ -335,7 +346,6 @@ main_menu() {
             "Help / Explain All Steps"
             "Exit"
         )
-        
         select opt in "${options[@]}"; do
             case "$opt" in
                 "Run all core steps") update_system; install_docker; harden_ssh; install_wings; configure_firewall; break;;
