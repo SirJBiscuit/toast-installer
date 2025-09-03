@@ -200,18 +200,103 @@ tune_performance() {
 show_help() {
     clear
     echo -e "${C_CYAN}${C_BOLD}--- Help: Explanation of Steps ---${C_RESET}"
-    echo -e "${C_YELLOW}Update System:${C_RESET} Synchronizes and upgrades all system packages to their latest versions. Essential for security and stability."
-    echo -e "${C_YELLOW}Install Docker:${C_RESET} Installs the Docker container engine, which is required by Pterodactyl Wings to run game servers in isolated environments."
-    echo -e "${C_YELLOW}Harden SSH:${C_RESET} Changes the default SSH port (22) to a custom one, reducing exposure to automated bots that scan for open SSH ports."
-    echo -e "${C_YELLOW}Install Wings:${C_RESET} Installs the Pterodactyl Wings daemon, the software that connects this node to your control panel to manage servers."
-    echo -e "${C_YELLOW}Configure Firewall:${C_RESET} Sets up UFW (Uncomplicated Firewall) to block all incoming traffic except for essential ports (SSH, Wings)."
-    echo -e "${C_YELLOW}Install Fail2ban:${C_RESET} A security tool that monitors for repeated login failures and automatically bans the offending IP addresses to prevent brute-force attacks."
-    echo -e "${C_YELLOW}Configure Swap:${C_RESET} Creates a swap file, which acts as virtual RAM. This helps prevent servers from crashing if the physical RAM is fully used."
-    echo -e "${C_YELLOW}Install Common Utilities:${C_RESET} Installs a bundle of useful tools for server management: htop (process viewer), ncdu (disk usage analyzer), and zip/unzip."
-    echo -e "${C_YELLOW}Auto Security Updates:${C_RESET} Configures the system to automatically download and install security-related package updates, keeping the node secure over time."
-    echo -e "${C_YELLOW}Performance Tuning:${C_RESET} Installs and applies a system profile optimized for virtualization and network throughput, which can improve server performance."
+    echo -e "${C_YELLOW}Update System:${C_RESET} Synchronizes and upgrades all system packages."
+    echo -e "${C_YELLOW}Install Docker:${C_RESET} Installs the Docker container engine required by Wings."
+    echo -e "${C_YELLOW}Harden SSH:${C_RESET} Changes the default SSH port to reduce exposure to bots."
+    echo -e "${C_YELLOW}Install Wings:${C_RESET} Installs the Pterodactyl Wings daemon."
+    echo -e "${C_YELLOW}Configure Firewall:${C_RESET} Sets up UFW to block all non-essential ports."
+    echo -e "${C_YELLOW}Install Fail2ban:${C_RESET} A security tool to prevent brute-force attacks."
+    echo -e "${C_YELLOW}Configure Swap:${C_RESET} Creates a swap file to prevent out-of-memory errors."
+    echo -e "${C_YELLOW}Install Common Utilities:${C_RESET} Installs htop, ncdu, and zip/unzip."
+    echo -e "${C_YELLOW}Auto Security Updates:${C_RESET} Configures the system to auto-install security patches."
+    echo -e "${C_YELLOW}Performance Tuning:${C_RESET} Applies a system profile to improve performance."
+    echo -e "${C_YELLOW}Install Other Scripts:${C_RESET} Downloads and installs other useful scripts from your GitHub."
     echo -e "\nPress any key to return to the main menu..."
     read -n 1 -s -r
+}
+
+install_other_scripts() {
+    log_info "--- Install Other Scripts ---"
+    
+    PS3=$'\n'"Select a script to install: "
+    # This points to your toast-installer repository.
+    local repo_url="https://raw.githubusercontent.com/SirJBiscuit/toast-installer/main"
+    
+    # List of your scripts. Format: "Display Name" "command_name" "full_raw_github_url"
+    local scripts=(
+        "Ptero Monitor" "pteromonitor" "$repo_url/pteromonitor"
+        "Ptero Menu" "pteromenu" "$repo_url/pteromenu"
+        "Ptero Name" "pteroname" "$repo_url/pteroname"
+        "Ptero Status" "pterostatus" "$repo_url/pterostatus"
+        "Ptero Restart" "ptero-restart" "$repo_url/ptero-restart"
+        "Ptero Watchdog" "ptero-watchdog" "$repo_url/ptero-watchdog"
+        "Toast Script" "toast" "$repo_url/toast"
+    )
+
+    local options=()
+    for i in "${!scripts[@]}"; do
+        if (( i % 3 == 0 )); then
+            options+=("${scripts[i]}")
+        fi
+    done
+    options+=("Back to Main Menu")
+
+    select opt in "${options[@]}"; do
+        if [[ "$opt" == "Back to Main Menu" ]]; then
+            break
+        fi
+        for i in "${!scripts[@]}"; do
+            if [[ "${scripts[i]}" == "$opt" ]]; then
+                local name="${scripts[i]}"
+                local command="${scripts[i+1]}"
+                local url="${scripts[i+2]}"
+                
+                if prompt_yes_no "Install '$name' as '$command'?"; then
+                    log_info "Installing '$command' from $url..."
+                    curl -sSL "$url" | sed 's/\r$//' | sudo tee "/usr/local/bin/$command" > /dev/null
+                    sudo chmod +x "/usr/local/bin/$command"
+                    if [ -f "/usr/local/bin/$command" ]; then
+                        log_success "'$command' installed successfully."
+                    else
+                        log_error "Failed to install '$command'."
+                    fi
+                fi
+                break 2
+            fi
+        done
+        log_warning "Invalid option. Please try again."
+    done
+}
+
+# --- Developer Function ---
+
+update_repository() {
+    log_info "--- Update GitHub Repository ---"
+    
+    if ! git rev-parse --is-inside-work-tree > /dev/null 2>&1; then
+        log_error "This command must be run from within the git repository folder."
+        return 1
+    fi
+
+    if git diff-index --quiet HEAD --; then
+        log_success "No changes to commit."
+        return 0
+    fi
+
+    read -rp "$(echo -e "${C_YELLOW}[QUESTION]${C_RESET} Enter commit message: ")" commit_message
+    if [ -z "$commit_message" ]; then
+        log_warning "Commit message cannot be empty. Aborting."
+        return 1
+    fi
+
+    log_info "Adding, committing, and pushing changes..."
+    git add . && git commit -m "$commit_message" && git push origin main
+
+    if [ $? -eq 0 ]; then
+        log_success "Repository updated successfully."
+    else
+        log_error "Failed to push changes to GitHub. You may need to enter your PAT."
+    fi
 }
 
 # --- Main Script Logic ---
@@ -246,6 +331,7 @@ main_menu() {
             "Install Common Utilities"
             "Configure Auto Security Updates"
             "Apply Performance Tuning"
+            "Install Other Scripts"
             "Help / Explain All Steps"
             "Exit"
         )
@@ -263,6 +349,7 @@ main_menu() {
                 "Install Common Utilities") install_common_utils; break;;
                 "Configure Auto Security Updates") configure_auto_updates; break;;
                 "Apply Performance Tuning") tune_performance; break;;
+                "Install Other Scripts") install_other_scripts; break;;
                 "Help / Explain All Steps") show_help; break;;
                 "Exit") exit 0;;
                 *) log_warning "Invalid option \$REPLY. Please try again.";;
@@ -274,4 +361,8 @@ main_menu() {
 }
 
 # --- Script Entrypoint ---
-main_menu
+if [ "$1" == "--commit" ]; then
+    update_repository
+else
+    main_menu
+fi
